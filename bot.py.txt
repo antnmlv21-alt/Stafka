@@ -1,0 +1,89 @@
+import telebot
+import requests
+import schedule
+import pytz
+import time
+import datetime
+import threading
+import os
+
+# Берем токен из переменных окружения Koyeb
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+def get_football_data():
+    """Собирает статистику матчей на сегодня через бесплатный API"""
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    # Бесплатный тестовый ключ '3' для TheSportsDB (без регистрации)
+    url = f"https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d={today}&s=Soccer"
+    
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        events = data.get('events')
+        
+        if not events:
+            return "На сегодня матчей по футболу не найдено или API временно недоступно."
+
+        message = f"📊 <b>УТРЕННИЙ ДАЙДЖЕСТ ({today})</b>\n\n"
+        
+        # Берем первые 10 матчей, чтобы не превышать лимит сообщения
+        for event in events[:10]: 
+            league = event.get('strLeague', 'Неизвестная лига')
+            home = event.get('strHomeTeam', '')
+            away = event.get('strAwayTeam', '')
+            time_match = event.get('strTime', 'Время не указано')
+            
+            if home and away:
+                message += f"⚽️ <b>{home} — {away}</b>\n"
+                message += f"🏆 {league} | ⏰ {time_match}\n\n"
+                
+        message += "<i>Данные предоставлены TheSportsDB. Анализ — в чате с ИИ.</i>"
+        return message
+        
+    except Exception as e:
+        print(f"Ошибка при запросе к API: {e}")
+        return "⚠️ Ошибка при получении данных. Проверьте логи на Koyeb."
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "Привет! Я бот для сбора утренней статистики. Напиши /today, чтобы получить матчи на сегодня, или жди рассылку в 06:00 МСК.")
+
+@bot.message_handler(commands=['today'])
+def send_today(message):
+    bot.send_message(message.chat.id, "🔄 Собираю данные...")
+    stats = get_football_data()
+    bot.send_message(message.chat.id, stats, parse_mode='HTML')
+
+def send_daily_digest():
+    """Функция для отправки дайджеста по расписанию"""
+    if not CHAT_ID:
+        print("Ошибка: CHAT_ID не задан в переменных окружения!")
+        return
+        
+    print("Отправка утреннего дайджеста...")
+    stats = get_football_data()
+    try:
+        bot.send_message(CHAT_ID, stats, parse_mode='HTML')
+    except Exception as e:
+        print(f"Не удалось отправить сообщение: {e}")
+
+def schedule_loop():
+    """Цикл проверки расписания в отдельном потоке"""
+    # Устанавливаем часовой пояс Москвы
+    tz = pytz.timezone('Europe/Moscow')
+    # Планируем на 06:00 утра по МСК
+    schedule.every().day.at("06:00", tz).do(send_daily_digest)
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(60) # Проверяем каждую минуту
+
+def start_bot():
+    """Запуск планировщика и самого бота"""
+    # Запускаем планировщик в фоне
+    threading.Thread(target=schedule_loop, daemon=True).start()
+    print("Бот запущен и ожидает команды...")
+    bot.infinity_polling()
